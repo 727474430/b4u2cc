@@ -7,16 +7,31 @@ import {
 } from "./types.ts";
 import { ProxyConfig } from "./config.ts";
 
-function normalizeBlocks(content: string | ClaudeContentBlock[]): string {
-  if (typeof content === "string") return content;
+function normalizeBlocks(content: string | ClaudeContentBlock[], triggerSignal?: string): string {
+  if (typeof content === "string") {
+    // 过滤掉用户输入中的所有 <invoke> 标签，防止注入攻击
+    // 注意：合法的工具调用会通过 tool_use block 转换，不会是纯字符串
+    return content.replace(/<invoke\b[^>]*>[\s\S]*?<\/invoke>/gi, "");
+  }
   return content.map((block) => {
-    if (block.type === "text") return block.text;
+    if (block.type === "text") {
+      // 即使在 text block 中，也要过滤掉 <invoke> 标签
+      // 因为这些不是从 tool_use 转换来的，可能是用户注入的
+      return block.text.replace(/<invoke\b[^>]*>[\s\S]*?<\/invoke>/gi, "");
+    }
     if (block.type === "tool_result") {
       return `<tool_result id="${block.tool_use_id}">${block.content ?? ""}</tool_result>`;
     }
     if (block.type === "tool_use") {
-      const payload = JSON.stringify(block.input ?? {});
-      return `<tool_call id="${block.id}" name="${block.name}">${payload}</tool_call>`;
+      // 只有从 tool_use 转换的 <invoke> 标签才会带触发信号
+      const params = Object.entries(block.input ?? {})
+        .map(([key, value]) => {
+          const stringValue = typeof value === "string" ? value : JSON.stringify(value);
+          return `<parameter name="${key}">${stringValue}</parameter>`;
+        })
+        .join("\n");
+      const trigger = triggerSignal ? `${triggerSignal}\n` : "";
+      return `${trigger}<invoke name="${block.name}">\n${params}\n</invoke>`;
     }
     return "";
   }).join("\n");
@@ -26,7 +41,7 @@ function mapRole(role: string): "user" | "assistant" {
   return role === "assistant" ? "assistant" : "user";
 }
 
-export function mapClaudeToOpenAI(body: ClaudeRequest, config: ProxyConfig): OpenAIChatRequest {
+export function mapClaudeToOpenAI(body: ClaudeRequest, config: ProxyConfig, triggerSignal?: string): OpenAIChatRequest {
   if (typeof body.max_tokens !== "number" || Number.isNaN(body.max_tokens)) {
     throw new Error("max_tokens is required for Claude requests");
   }
@@ -48,7 +63,7 @@ export function mapClaudeToOpenAI(body: ClaudeRequest, config: ProxyConfig): Ope
   for (const message of body.messages) {
     messages.push({
       role: mapRole(message.role),
-      content: normalizeBlocks(message.content),
+      content: normalizeBlocks(message.content, triggerSignal),
     });
   }
 

@@ -105,66 +105,112 @@ export class ToolifyParser {
   }
 
   private tryEmitInvokes(force = false) {
-    while (true) {
-      const lower = this.captureBuffer.toLowerCase();
-      const startIdx = lower.indexOf("<invoke");
-      if (startIdx === -1) {
-        if (!force) {
-          return;
-        }
-        if (this.captureBuffer) {
-          // Note: This log stays as system log since it's not request-specific
-          log("debug", "No invoke tag found, emitting as text", {
-            captureBufferPreview: this.captureBuffer.slice(0, 200),
-            force,
-          });
-          this.events.push({ type: "text", content: this.captureBuffer });
-          this.captureBuffer = "";
-        }
-        this.capturing = false;
+    const lower = this.captureBuffer.toLowerCase();
+    const startIdx = lower.indexOf("<invoke");
+    
+    if (startIdx === -1) {
+      if (!force) {
         return;
       }
-
-      const endIdx = this.captureBuffer.indexOf("</invoke>", startIdx);
-      if (endIdx === -1) {
-        // Note: This log stays as system log since it's not request-specific
-        log("debug", "Incomplete invoke tag, waiting for more data", {
-          captureBufferPreview: this.captureBuffer.slice(startIdx, startIdx + 200),
+      if (this.captureBuffer) {
+        log("debug", "No invoke tag found, emitting as text", {
+          captureBufferPreview: this.captureBuffer.slice(0, 200),
+          force,
         });
-        return;
+        this.events.push({ type: "text", content: this.captureBuffer });
+        this.captureBuffer = "";
       }
+      this.capturing = false;
+      return;
+    }
 
-      const endPos = endIdx + "</invoke>".length;
-      const invokeXml = this.captureBuffer.slice(startIdx, endPos);
-      // Note: This log stays as system log since it's not request-specific
-      log("debug", "Found complete invoke tag", {
+    const endIdx = this.captureBuffer.indexOf("</invoke>", startIdx);
+    if (endIdx === -1) {
+      log("debug", "Incomplete invoke tag, waiting for more data", {
+        captureBufferPreview: this.captureBuffer.slice(startIdx, startIdx + 200),
+      });
+      return;
+    }
+
+    const endPos = endIdx + "</invoke>".length;
+    const invokeXml = this.captureBuffer.slice(startIdx, endPos);
+    
+    // 检查 </invoke> 后面的内容
+    const afterInvoke = this.captureBuffer.slice(endPos);
+    const afterTrimmed = afterInvoke.trimStart();
+    
+    // 如果后面有非空白字符，且不是另一个 <invoke>，回退到文本模式
+    if (afterTrimmed && !afterTrimmed.toLowerCase().startsWith("<invoke") && !force) {
+      log("debug", "Non-whitespace content after </invoke>, falling back to text mode", {
+        afterContent: afterTrimmed.slice(0, 100),
+      });
+      this.events.push({ type: "text", content: this.captureBuffer });
+      this.captureBuffer = "";
+      this.capturing = false;
+      return;
+    }
+
+    log("debug", "Found complete invoke tag", {
+      invokeXml: invokeXml.slice(0, 500),
+    });
+    
+    const before = this.captureBuffer.slice(0, startIdx);
+    if (before) {
+      this.events.push({ type: "text", content: before });
+    }
+
+    const parsed = parseInvokeXml(invokeXml);
+    if (parsed) {
+      log("debug", "Successfully parsed first invoke call", {
+        toolName: parsed.name,
+        argumentKeys: Object.keys(parsed.arguments),
+      });
+      this.events.push({ type: "tool_call", call: parsed });
+      
+      // 过滤掉第一个工具调用后面的所有 <invoke>...</invoke> 标签
+      // 但保留非工具调用的文本内容
+      let remaining = afterInvoke;
+      let filteredContent = "";
+      
+      while (true) {
+        const trimmed = remaining.trimStart();
+        if (!trimmed) break;
+        
+        // 检查是否是另一个 <invoke> 标签
+        if (trimmed.toLowerCase().startsWith("<invoke")) {
+          const nextEndIdx = trimmed.indexOf("</invoke>");
+          if (nextEndIdx !== -1) {
+            // 找到完整的 <invoke>...</invoke>，跳过它
+            const skippedTag = trimmed.slice(0, nextEndIdx + "</invoke>".length);
+            log("debug", "Filtering out subsequent tool call", {
+              skippedTagPreview: skippedTag.slice(0, 200),
+            });
+            remaining = trimmed.slice(nextEndIdx + "</invoke>".length);
+            continue;
+          }
+        }
+        
+        // 不是工具调用，保留这部分内容
+        filteredContent = remaining;
+        break;
+      }
+      
+      if (filteredContent.trim()) {
+        log("debug", "Emitting remaining non-tool-call content as text", {
+          contentPreview: filteredContent.slice(0, 200),
+        });
+        this.events.push({ type: "text", content: filteredContent });
+      }
+    } else {
+      log("warn", "Failed to parse invoke XML", {
         invokeXml: invokeXml.slice(0, 500),
       });
-      const before = this.captureBuffer.slice(0, startIdx);
-      if (before) {
-        this.events.push({ type: "text", content: before });
-      }
-
-      this.captureBuffer = this.captureBuffer.slice(endPos);
-      const parsed = parseInvokeXml(invokeXml);
-      if (parsed) {
-        // Note: This log stays as system log since it's not request-specific
-        log("debug", "Successfully parsed invoke call", {
-          toolName: parsed.name,
-          argumentKeys: Object.keys(parsed.arguments),
-        });
-        this.events.push({ type: "tool_call", call: parsed });
-      } else {
-        // Note: This log stays as system log since it's not request-specific
-        log("warn", "Failed to parse invoke XML", {
-          invokeXml: invokeXml.slice(0, 500),
-        });
-      }
-      if (!this.captureBuffer.trim()) {
-        this.captureBuffer = "";
-        this.capturing = false;
-        return;
-      }
+      // 解析失败时，将整个捕获内容作为文本输出
+      this.events.push({ type: "text", content: this.captureBuffer });
     }
+    
+    // 清空缓冲区并退出捕获模式
+    this.captureBuffer = "";
+    this.capturing = false;
   }
 }

@@ -3,6 +3,16 @@ import { SSEWriter } from "./sse.ts";
 import { TextAggregator } from "./aggregator.ts";
 import { ProxyConfig } from "./config.ts";
 
+function generateToolId(): string {
+  // 生成随机 ID：toolu_ + 12位随机字符
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let id = 'toolu_';
+  for (let i = 0; i < 12; i++) {
+    id += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return id;
+}
+
 interface StreamContext {
   requestId: string;
   aggregator: TextAggregator;
@@ -107,7 +117,7 @@ export class ClaudeStream {
   private async emitToolCall(call: ParsedInvokeCall) {
     await this.endTextBlock();
     const index = this.context.nextBlockIndex++;
-    const toolId = `toolu_${index}`;
+    const toolId = generateToolId();
     await this.writer.send({
       event: "content_block_start",
       data: {
