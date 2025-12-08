@@ -247,7 +247,8 @@ async function handleTokenCount(req: Request, requestId: string) {
   }
 }
 
-serve((req) => {
+// 导出 handler 函数供 deploy.ts 使用
+export const handler = (req: Request) => {
   const url = new URL(req.url);
 
   if (req.method === "GET" && url.pathname === "/") {
@@ -295,4 +296,9 @@ serve((req) => {
 
   console.log(`404 - ${req.method} ${url.pathname}`);
   return new Response("Not Found", { status: 404 });
-}, config.autoPort ? undefined : { hostname: config.host, port: config.port });
+};
+
+// 如果是直接运行此文件（而不是被导入），则启动服务器
+if (import.meta.main) {
+  serve(handler, config.autoPort ? undefined : { hostname: config.host, port: config.port });
+}
